@@ -4,13 +4,14 @@ jobs:
   build-and-scan:
     runs-on: ubuntu-latest
     env:
-      VAULT_ADDR: http://localhost:8200      # in lab; in real use point to your Vault
+      VAULT_ADDR: http://localhost:8200
     steps:
       - uses: actions/checkout@v4
 
       # 1) Login to Vault (AppRole or token) and fetch CI secrets
       - name: Login to Vault and fetch secrets
-        uses: hashicorp/vault-action@v2
+        uses: hashicorp/vault-action@v2 #The hashicorp/vault-action step fetches secrets into the job environment for later steps. In a real setup use AppRole/OIDC for short-lived auth.
+
         with:
           url: ${{ env.VAULT_ADDR }}
           method: token
@@ -35,10 +36,32 @@ jobs:
       - name: Build container image
         run: docker build -t demo-app:${{ github.sha }} .
 
-      # 4) Trivy container scan (official GitHub Action)
+      # 4) Trivy container scan
       - name: Trivy scan image
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@master # This is the officially maintained action for Trivy scans in GitHub Actions.
         with:
           image-ref: demo-app:${{ github.sha }}
           format: 'json'
           exit-code: '1'   # fail on vulnerabilities above threshold
+      # 5)  OPA policy-as-code check - final step to evaluate policy 
+      - name: Install OPA CLI
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64
+          chmod +x opa
+          sudo mv opa /usr/local/bin/
+
+      - name: Run OPA policy check
+        run: |
+          # For demo: collect k8s manifests into file input.json
+          python - <<'PY'
+                      import yaml, json, glob
+                      manifests=[]
+                      for f in glob.glob("k8s/*.yaml"):
+                      with open(f) as fh:
+                     for doc in yaml.safe_load_all(fh):
+                     if doc:
+                     manifests.append(doc)
+                     print(json.dumps({"manifests":manifests}))
+                     PY
+          opa eval -i input.json -d policy.rego "data.ci.deny" --fail
+
